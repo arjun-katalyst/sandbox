@@ -1,0 +1,10 @@
+Hint: look closely at _derive_seed() in encrypt.py.
+
+It hashes the key with SHA-256 (a 256-bit hash) but the LCG seed it
+produces is much smaller than 256 bits. How small? That's the key
+question -- once you know the real size of the seed space, a brute
+force over every possible seed becomes very fast.
+
+There's no flag marker in the decrypted output. You'll need a way to
+automatically tell a correct decryption apart from a wrong one (think
+about what the plaintext should look like as bytes).

@@ -60,6 +60,7 @@ Katalyst Exam -- coding round
 
 Available commands: nano, python3
 Files are in ~/challenge. Write your answer into answer.txt.
+Stuck? See ~/challenge/HINT.txt.
 Press Ctrl+D or type "exit" when you are done early.
 
 EOF
