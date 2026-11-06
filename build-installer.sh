@@ -75,7 +75,7 @@ find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f -exec chmod 0644 {} +
 chmod 0755 "$STAGE"/DEBIAN/{postinst,prerm,postrm} \
            "$STAGE"/usr/sbin/katalyst-exam-admin \
-           "$STAGE"/usr/lib/katalyst-exam/{apply,build-policies,exit-guard,hash-password,exam-session,round-chooser,session-wayland,session-x11}
+           "$STAGE"/usr/lib/katalyst-exam/{apply,build-policies,exit-guard,hash-password,exam-session,round-chooser,session-wayland,session-x11,terminal-session,restricted-shell,time-up}
 
 rm -f "$OUT"/katalyst-exam_*_all.deb
 dpkg-deb --root-owner-group -Zxz --build "$STAGE" "$OUT/katalyst-exam_${VERSION}_all.deb" >/dev/null
