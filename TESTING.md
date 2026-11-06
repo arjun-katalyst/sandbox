@@ -89,6 +89,14 @@ Each must do **nothing** or stay inside the allowlisted site:
       with no way back into the round (only the exit password works)
 - [ ] Submissions from a previous session are still present after a fresh login
       (only `$HOME` is wiped, not `/var/lib/katalyst-exam/submissions`)
+- [ ] Typed commands appear in `sudo cat /var/lib/katalyst-exam/monitor/history.log`
+      (as root) after the round, with timestamps
+- [ ] `sudo cat /var/lib/katalyst-exam/monitor/process.log` shows periodic
+      `ps` snapshots while the round was running
+- [ ] As the `exam` user: `cat ~/../../var/lib/katalyst-exam/monitor/history.log`
+      (or any attempt to read/delete it) fails — permission denied
+- [ ] No way to launch a browser from the restricted shell (`firefox`,
+      `/usr/bin/firefox-esr`, etc. all fail)
 
 ## G. Uninstall
 

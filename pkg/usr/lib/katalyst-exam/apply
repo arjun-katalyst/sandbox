@@ -65,6 +65,21 @@ if id "$USER_NAME" >/dev/null 2>&1; then
     # per-session home wipe never touches them). Exam-owned so
     # terminal-session can write without needing sudo/polkit.
     install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$STATE/submissions"
+
+    # Hidden audit log for the terminal round (command history + periodic
+    # process snapshots). The directory is root-only: the exam user cannot
+    # list, create, delete or rename anything in it. The two files inside
+    # are pre-created group-writable (append only) so the exam-user
+    # session can write new entries but never read, truncate or delete
+    # existing ones -- chattr +a is enforced by the kernel and can't be
+    # cleared without CAP_LINUX_IMMUTABLE, which the exam user never has.
+    MONITOR_DIR="$STATE/monitor"
+    install -d -o root -g root -m 0700 "$MONITOR_DIR"
+    for f in history.log process.log; do
+        [ -f "$MONITOR_DIR/$f" ] || install -o root -g "$USER_NAME" -m 0620 /dev/null "$MONITOR_DIR/$f"
+        chattr +a "$MONITOR_DIR/$f" 2>/dev/null \
+            || warn "chattr +a not supported on this filesystem for $MONITOR_DIR/$f"
+    done
 else
     warn "user '$USER_NAME' does not exist"
 fi

@@ -90,6 +90,18 @@ authorises an early exit. Collect these after the round with:
 sudo cat /var/lib/katalyst-exam/submissions/*.txt
 ```
 
+Every command typed and a process snapshot every 15 s are logged to
+`/var/lib/katalyst-exam/monitor/{history.log,process.log}` for post-round
+review (e.g. spotting an attempt to launch a browser or network tool).
+These are root-only, append-only (`chattr +a`) — the exam user can write
+new entries but never read, edit or delete them. Review with:
+```
+sudo cat /var/lib/katalyst-exam/monitor/history.log
+sudo cat /var/lib/katalyst-exam/monitor/process.log
+```
+To clear them between exam days: `sudo chattr -a <file>` first, then
+truncate/remove and let `apply` recreate them.
+
 ## Admin commands (on a lab machine)
 
 ```
@@ -127,7 +139,9 @@ home-folder permissions. Optionally removes Firefox ESR and the Mozilla repo.
   *programs* can be run (only `nano`/`python3`), but `python3` itself can run
   arbitrary code (`os.system`, `subprocess`, sockets) — a candidate with
   enough know-how can get a full shell or network access from inside it.
-  Accepted risk for a 45-minute round backed by an in-person follow-up.
+  Accepted risk for a 45-minute round backed by an in-person follow-up, and
+  partially mitigated by the command-history + process-snapshot audit log
+  (see above) for after-the-fact review.
 - **Physical access**: set a BIOS password and disable USB boot, and protect
   GRUB, or anyone can boot into recovery mode.
 - **Phones in the room**: invigilation.

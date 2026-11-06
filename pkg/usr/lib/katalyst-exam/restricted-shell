@@ -24,7 +24,19 @@ mapfile -t _META < "$HOME/.katalyst-exam/round_meta" 2>/dev/null
 ROUND_START="${_META[0]:-$EPOCHSECONDS}"
 TIME_LIMIT="${_META[1]:-2700}"
 export ROUND_START TIME_LIMIT
-export PROMPT_COMMAND='_r=$(( TIME_LIMIT - (EPOCHSECONDS - ROUND_START) )); (( _r < 0 )) && _r=0; PS1=$(printf "[%02d:%02d left] %s $ " $((_r/60)) $((_r%60)) "$PWD")'
+export PROMPT_COMMAND='history -a; _r=$(( TIME_LIMIT - (EPOCHSECONDS - ROUND_START) )); (( _r < 0 )) && _r=0; PS1=$(printf "[%02d:%02d left] %s $ " $((_r/60)) $((_r%60)) "$PWD")'
+
+# Command history flushed live (via "history -a" above, each prompt) into
+# the hidden append-only log apply pre-created. HISTFILE/HISTCONTROL are
+# exported before exec, since rbash blocks changing them afterward -- but
+# reading them from the inherited environment at startup is unaffected.
+# The file is write-only to this uid (no read bit), so bash silently
+# starts with empty in-session history -- that's intended.
+export HISTFILE="${HISTORY_LOG:-/var/lib/katalyst-exam/monitor/history.log}"
+export HISTTIMEFORMAT='%F %T '
+export HISTCONTROL=
+export HISTSIZE=100000
+export HISTFILESIZE=100000
 
 # Periodic warnings at 10/5/1 min remaining, so a candidate sitting inside
 # nano (which doesn't repaint on its own) still gets notified. A terminal

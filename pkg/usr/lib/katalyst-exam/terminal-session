@@ -17,6 +17,10 @@ STATE="$HOME/.katalyst-exam"
 WORKDIR="$HOME/challenge"
 ANSWER_FILE="$WORKDIR/answer.txt"
 SUBMIT_DIR="/var/lib/katalyst-exam/submissions"
+MONITOR_DIR="/var/lib/katalyst-exam/monitor"
+export HISTORY_LOG="$MONITOR_DIR/history.log"
+PROCESS_LOG="$MONITOR_DIR/process.log"
+PROCESS_SNAPSHOT_SECONDS=15
 TIME_LIMIT_SECONDS=2700   # 45 minutes
 
 log() { logger -t katalyst-exam -- "$*" 2>/dev/null || true; }
@@ -58,7 +62,24 @@ save_submission() {  # save_submission <tag>
     pkill -TERM -u "$(id -u)" -f "$LIB/restricted-shell" 2>/dev/null
 ) &
 WATCHDOG_PID=$!
-trap 'kill "$WATCHDOG_PID" 2>/dev/null' EXIT
+
+# ---- Process-snapshot monitor ---------------------------------------------------
+# Periodic record of what's running under this uid, for after-the-fact
+# malpractice review (e.g. a browser or network tool launched via python3).
+# Appends to a root-owned, append-only (chattr +a) file -- this session
+# can write new entries but never read, edit or delete existing ones.
+(
+    while true; do
+        {
+            printf -- '--- %s ---\n' "$(date -Is)"
+            ps -u "$(id -u)" -o pid,comm --no-headers
+        } >> "$PROCESS_LOG" 2>/dev/null
+        sleep "$PROCESS_SNAPSHOT_SECONDS"
+    done
+) &
+PROCMON_PID=$!
+
+trap 'kill "$WATCHDOG_PID" "$PROCMON_PID" 2>/dev/null' EXIT
 
 log "terminal round '$CHALLENGE_NAME' started for $(id -un), time limit ${TIME_LIMIT_SECONDS}s"
 
