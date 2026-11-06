@@ -20,6 +20,9 @@ trap 'rc=$?; printf "\nERROR: install.sh line %s failed (exit %s): %s\n" "$LINEN
 
 [ "$(id -u)" = 0 ] || die "run with sudo: sudo $0"
 export DEBIAN_FRONTEND=noninteractive
+# chpasswd/useradd/etc. live in /usr/sbin; some shells (non-login, minimal
+# containers) don't have it on PATH even as root.
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 # ---- Uninstall ---------------------------------------------------------------
 if [ "${1:-}" = "--uninstall" ]; then

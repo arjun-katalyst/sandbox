@@ -2,6 +2,10 @@
 # Katalyst Exam administration.
 set -euo pipefail
 
+# chpasswd lives in /usr/sbin; some shells (non-login, minimal containers)
+# don't have it on PATH even as root.
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 ETC=/etc/katalyst-exam
 LIB=/usr/lib/katalyst-exam
 USER_NAME=exam
