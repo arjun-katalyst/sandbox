@@ -1,0 +1,10 @@
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# Contains the real key + answer for the vault-crypto challenge -- must
+# never be pushed to a public repo. Keep it local only.
+challenges/vault-crypto/solution/

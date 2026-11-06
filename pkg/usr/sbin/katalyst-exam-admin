@@ -1,0 +1,194 @@
+#!/bin/bash
+# Katalyst Exam administration.
+set -euo pipefail
+
+ETC=/etc/katalyst-exam
+LIB=/usr/lib/katalyst-exam
+USER_NAME=exam
+
+usage() {
+    cat <<EOF
+Usage: sudo katalyst-exam-admin <command>
+
+  status                  Show the exam configuration and health checks
+  apply                   Re-apply /etc/katalyst-exam/* (after manual edits)
+  set-login-password      Change the exam login password ("password to open")
+  set-exit-password       Change the invigilator exit password ("password to close")
+  set-round <n> <label> <url>
+                          Add/change exam round n, e.g.
+                          set-round 1 "ML round" https://www.kaggle.com/competitions/...
+  remove-round <n>        Remove exam round n
+  set-start-url <url>     Start page used only when no rounds are configured
+  edit-allowlist          Edit the site allowlist, then apply
+  usb <allow|block>       Allow/block USB storage for the exam user
+  force-x11 <on|off>      Use the X11 session instead of Wayland (cage)
+  test-policies           (run WITHOUT sudo, from a normal desktop) open Firefox
+                          ESR with the exam policies to check them at about:policies
+EOF
+}
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }; }
+
+conf_set() {  # conf_set KEY VALUE
+    python3 -I - "$ETC/exam.conf" "$1" "$2" <<'PY'
+import re, sys
+path, key, val = sys.argv[1:]
+if "\n" in val:
+    sys.exit("invalid value")
+try:
+    lines = open(path, encoding="utf-8").read().splitlines()
+except FileNotFoundError:
+    lines = []
+out, done = [], False
+for line in lines:
+    if re.match(rf"\s*{re.escape(key)}\s*=", line):
+        if not done:
+            out.append(f"{key}={val}")
+            done = True
+        continue
+    out.append(line)
+if not done:
+    out.append(f"{key}={val}")
+open(path, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+}
+
+conf_get() {
+    local v
+    v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ETC/exam.conf" 2>/dev/null | tail -n1)
+    v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+    printf '%s' "${v:-$2}"
+}
+
+read_password_twice() {  # prints password on stdout
+    local a b
+    read -rsp "$1: " a; echo >&2
+    read -rsp "Repeat: " b; echo >&2
+    [ -n "$a" ] || { echo "Empty password." >&2; exit 1; }
+    [ "$a" = "$b" ] || { echo "Passwords do not match." >&2; exit 1; }
+    printf '%s' "$a"
+}
+
+cmd_status() {
+    local ok="  [ok]" bad="  [!!]"
+    echo "Katalyst Exam status"
+    echo "-----------------"
+    if id "$USER_NAME" >/dev/null 2>&1; then
+        echo "$ok user '$USER_NAME' exists"
+        case "$(passwd -S "$USER_NAME" 2>/dev/null | awk '{print $2}')" in
+            P) echo "$ok login password set" ;;
+            *) echo "$bad login password NOT set (set-login-password)" ;;
+        esac
+        if id -nG "$USER_NAME" | tr ' ' '\n' | grep -qxE 'sudo|adm|admin|wheel'; then
+            echo "$bad '$USER_NAME' is in an admin group!"
+        fi
+    else
+        echo "$bad user '$USER_NAME' missing"
+    fi
+    if [ -s "$ETC/exit.hash" ]; then echo "$ok exit password set"
+    else echo "$bad exit password NOT set (set-exit-password)"; fi
+
+    local as=/var/lib/AccountsService/users/$USER_NAME
+    echo "     session: $(sed -n 's/^Session=//p' "$as" 2>/dev/null || echo '?')"
+
+    if command -v firefox-esr >/dev/null; then
+        echo "$ok $(firefox-esr --version 2>/dev/null | head -n1)"
+    else
+        echo "$bad firefox-esr not installed"
+    fi
+    local pol
+    pol=$("$LIB/build-policies" --path 2>/dev/null || true)
+    if [ -n "$pol" ] && [ -f "$pol" ]; then echo "$ok policies: $pol"
+    else echo "$bad policies.json not found (run: sudo katalyst-exam-admin apply)"; fi
+    if [ -n "$pol" ] && [ -f "$(dirname "$(dirname "$pol")")/katalyst-exam.cfg" ]; then
+        echo "$ok single-tab lock installed"
+    else
+        echo "$bad single-tab lock missing (run: sudo katalyst-exam-admin apply)"
+    fi
+    [ -f /etc/firefox/policies/policies.json ] && \
+        echo "$bad /etc/firefox/policies/policies.json exists and overrides the exam policies"
+    command -v cage >/dev/null && echo "$ok cage installed" || echo "$bad cage missing"
+
+    echo "     exam rounds:"
+    if grep -qE '^[[:space:]]*ROUND_[0-9]+[[:space:]]*=' "$ETC/exam.conf" 2>/dev/null; then
+        sed -n 's/^[[:space:]]*ROUND_\([0-9]\+\)[[:space:]]*=[[:space:]]*/\1 /p' "$ETC/exam.conf" \
+            | sort -n | sed 's/^\([0-9]*\) \(.*\)|\(.*\)$/        \1. \2  ->  \3/'
+    else
+        echo "        (none) start url: $(conf_get START_URL '?')"
+    fi
+    echo "     usb storage: $( [ "$(conf_get ALLOW_USB no)" = yes ] && echo allowed || echo blocked)"
+    echo "     force x11: $(conf_get FORCE_X11 no)"
+    echo "     allowlist:"
+    grep -vE '^[[:space:]]*(#|$)' "$ETC/allowlist.txt" 2>/dev/null | sed 's/^/        /'
+    if grep -Eqs '^[[:space:]]*AutomaticLoginEnable[[:space:]]*=[[:space:]]*(true|True|1)' /etc/gdm3/custom.conf; then
+        echo "$bad GDM auto-login is enabled"
+    fi
+    if lsmod 2>/dev/null | grep -q '^nvidia'; then
+        echo "     note: NVIDIA driver loaded; if the exam session shows a black screen use: force-x11 on"
+    fi
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    status)
+        cmd_status ;;
+    apply)
+        need_root; "$LIB/apply" ;;
+    set-login-password)
+        need_root
+        pw=$(read_password_twice "New exam login password")
+        printf '%s:%s\n' "$USER_NAME" "$pw" | chpasswd
+        echo "Login password updated." ;;
+    set-exit-password)
+        need_root
+        pw=$(read_password_twice "New invigilator exit password")
+        hash=$(printf '%s\n' "$pw" | "$LIB/hash-password")
+        install -m 0644 /dev/null "$ETC/exit.hash"
+        printf '%s\n' "$hash" > "$ETC/exit.hash"
+        echo "Exit password updated." ;;
+    set-start-url)
+        need_root
+        url="${1:?usage: set-start-url <https://...>}"
+        [[ "$url" =~ ^https:// ]] || { echo "URL must start with https://" >&2; exit 1; }
+        conf_set START_URL "$url"; "$LIB/apply" ;;
+    set-round)
+        need_root
+        n="${1:-}"; label="${2:-}"; url="${3:-}"
+        [[ "$n" =~ ^[0-9]+$ ]] && [ -n "$label" ] && [ -n "$url" ] \
+            || { echo 'usage: set-round <n> "<label>" <https://url>' >&2; exit 1; }
+        [[ "$url" =~ ^https:// ]] || { echo "URL must start with https://" >&2; exit 1; }
+        [[ "$label" != *"|"* ]] || { echo "Label must not contain '|'" >&2; exit 1; }
+        conf_set "ROUND_$n" "$label|$url"; "$LIB/apply" ;;
+    remove-round)
+        need_root
+        n="${1:-}"; [[ "$n" =~ ^[0-9]+$ ]] || { echo "usage: remove-round <n>" >&2; exit 1; }
+        sed -i "/^[[:space:]]*ROUND_${n}[[:space:]]*=/d" "$ETC/exam.conf"; "$LIB/apply" ;;
+    edit-allowlist)
+        need_root
+        "${EDITOR:-nano}" "$ETC/allowlist.txt"; "$LIB/apply" ;;
+    usb)
+        need_root
+        case "${1:-}" in
+            allow) conf_set ALLOW_USB yes ;;
+            block) conf_set ALLOW_USB no ;;
+            *) echo "usage: usb <allow|block>" >&2; exit 1 ;;
+        esac
+        "$LIB/apply" ;;
+    force-x11)
+        need_root
+        case "${1:-}" in
+            on)  conf_set FORCE_X11 yes ;;
+            off) conf_set FORCE_X11 no ;;
+            *) echo "usage: force-x11 <on|off>" >&2; exit 1 ;;
+        esac
+        "$LIB/apply" ;;
+    test-policies)
+        [ "$(id -u)" != 0 ] || { echo "Run without sudo, from a normal desktop session." >&2; exit 1; }
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        firefox-esr --no-remote --profile "$tmp" about:policies ;;
+    ""|-h|--help|help)
+        usage ;;
+    *)
+        echo "Unknown command: $cmd" >&2; usage; exit 1 ;;
+esac

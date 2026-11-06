@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ]; then
+    # Nobody can log in to the exam account once the exam session is gone
+    passwd -l exam >/dev/null 2>&1 || true
+    /usr/lib/katalyst-exam/build-policies --remove || true
+    rm -f /etc/polkit-1/localauthority/50-local.d/50-katalyst-exam-no-usb.pkla \
+          /etc/polkit-1/rules.d/50-katalyst-exam-no-usb.rules
+fi
+exit 0

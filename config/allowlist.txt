@@ -1,0 +1,24 @@
+# Katalyst Exam allowlist — the ONLY sites the exam browser can open.
+#
+# One entry per line. Blank lines and lines starting with # are ignored.
+#
+#   example.com            -> example.com and every subdomain (https + wss)
+#   www.example.com/path/  -> only URLs on that host starting with that path
+#   https://exact/match/*  -> written as-is (Firefox match-pattern syntax)
+#
+# Everything not listed here is blocked.
+#
+# NOTE: this list is a starting point. Validate it on a test machine
+# (see TESTING.md, "Kaggle domain discovery") before exam day.
+
+# Kaggle site, API and static assets
+kaggle.com
+# Notebook kernels / Jupyter proxy
+kaggle.net
+# User content (dataset previews, images, notebook outputs)
+kaggleusercontent.com
+
+# reCAPTCHA used on the Kaggle email sign-in form (paths only, not all of Google)
+www.google.com/recaptcha/
+www.gstatic.com/recaptcha/
+www.recaptcha.net/recaptcha/

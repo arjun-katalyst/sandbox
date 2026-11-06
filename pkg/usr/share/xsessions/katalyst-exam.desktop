@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Katalyst Exam
+Comment=Locked-down exam browser (X11 fallback)
+Exec=/usr/lib/katalyst-exam/session-x11
+Type=Application
+DesktopNames=katalyst-exam

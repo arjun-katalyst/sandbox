@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+if [ "$1" = purge ]; then
+    # Restore home-folder permissions changed by Katalyst Exam
+    if [ -f /var/lib/katalyst-exam/homes-changed ]; then
+        while read -r home mode; do
+            [ -d "$home" ] && chmod "$mode" "$home" || true
+        done < /var/lib/katalyst-exam/homes-changed
+    fi
+    if id exam >/dev/null 2>&1; then
+        pkill -KILL -u exam 2>/dev/null || true
+        userdel -r exam 2>/dev/null || userdel exam || true
+    fi
+    rm -f /var/lib/AccountsService/users/exam
+    systemctl try-restart accounts-daemon.service 2>/dev/null || true
+    rm -rf /etc/katalyst-exam /var/lib/katalyst-exam
+fi
+exit 0

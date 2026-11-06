@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Katalyst Exam
+Comment=Locked-down exam browser (Wayland)
+Exec=/usr/lib/katalyst-exam/session-wayland
+Type=Application
+DesktopNames=katalyst-exam

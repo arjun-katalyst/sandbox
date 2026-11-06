@@ -1,0 +1,104 @@
+#!/usr/bin/python3 -I
+"""Full-screen exam round picker shown right after the invigilator logs in.
+
+Usage: round-chooser "Label|https://url" ["Label|https://url" ...]
+Prints the chosen "Label|URL" line on stdout and exits 0.
+Exits 1 on error (exam-session then falls back to the first round).
+"""
+import sys
+
+
+def parse(args):
+    rounds = []
+    for a in args:
+        label, sep, url = a.partition("|")
+        label, url = label.strip(), url.strip()
+        if sep and label and (url.startswith("https://") or url.startswith("terminal:")):
+            rounds.append((label, url))
+    return rounds
+
+
+def main(argv) -> int:
+    rounds = parse(argv)
+    if not rounds:
+        return 1
+
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk, Gtk
+
+    chosen = {}
+
+    css = Gtk.CssProvider()
+    css.load_from_data(b"""
+        window { background: #1d2430; }
+        label { color: #e8ecf2; }
+        .brand { font-size: 12pt; font-weight: bold; color: #6f9cff; letter-spacing: 3px; }
+        .title { font-size: 30pt; font-weight: bold; }
+        .sub { font-size: 14pt; color: #8f9bad; }
+        button.action { background-image: none; background-color: #2f6fdb;
+                 border: none; border-radius: 10px; box-shadow: none; }
+        button.action label { color: #ffffff; }
+        button.action:hover { background-color: #3b7cf0; }
+        button.action:active { background-color: #2459b5; }
+        button.action:disabled { background-color: #3a4454; }
+        button.action:disabled label { color: #8f9bad; }
+        button.action.secondary { background-color: #4a5568; }
+        button.action.secondary:hover { background-color: #5a667a; }
+        button.action label { font-size: 22pt; }
+        button.action { padding: 22px 60px; min-width: 420px; }
+    """)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    win = Gtk.Window(title="Katalyst Exam")
+    win.set_decorated(False)
+    win.fullscreen()
+    # No way to dismiss without choosing
+    win.connect("delete-event", lambda *_: True)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+    box.set_halign(Gtk.Align.CENTER)
+    box.set_valign(Gtk.Align.CENTER)
+
+    brand = Gtk.Label(label="KATALYST.AI  ·  EXAM")
+    brand.get_style_context().add_class("brand")
+    box.pack_start(brand, False, False, 0)
+    title = Gtk.Label(label="Select exam round")
+    title.get_style_context().add_class("title")
+    box.pack_start(title, False, False, 0)
+    sub = Gtk.Label(label="Invigilator: choose the round for this session")
+    sub.get_style_context().add_class("sub")
+    box.pack_start(sub, False, False, 12)
+
+    def pick(_btn, rnd):
+        chosen["round"] = rnd
+        Gtk.main_quit()
+
+    first = None
+    for label, url in rounds:
+        btn = Gtk.Button(label=label)
+        btn.get_style_context().add_class("action")
+        btn.connect("clicked", pick, (label, url))
+        box.pack_start(btn, False, False, 0)
+        first = first or btn
+
+    win.add(box)
+    win.show_all()
+    first.grab_focus()
+    Gtk.main()
+
+    if "round" not in chosen:
+        return 1
+    label, url = chosen["round"]
+    print(f"{label}|{url}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as exc:
+        print(f"round-chooser error: {exc}", file=sys.stderr)
+        sys.exit(1)

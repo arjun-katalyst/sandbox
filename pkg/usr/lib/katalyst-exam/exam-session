@@ -1,0 +1,101 @@
+#!/bin/bash
+# Runs inside the single-app compositor (cage) as the exam user.
+# Starts Firefox ESR full screen (--kiosk mode); whenever Firefox exits for any reason
+# (Ctrl+Q, crash, closed window) the exit guard asks for the invigilator
+# password. Without it, Firefox is relaunched with the previous tabs.
+set -u
+
+CONF=/etc/katalyst-exam/exam.conf
+LIB=/usr/lib/katalyst-exam
+STATE="$HOME/.katalyst-exam"
+PROFILE="$STATE/profile"
+
+log() { logger -t katalyst-exam -- "$*" 2>/dev/null || true; }
+
+conf_get() {  # conf_get KEY DEFAULT
+    local v
+    v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null | tail -n1)
+    v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+    printf '%s' "${v:-$2}"
+}
+
+# ---- Exam round -----------------------------------------------------------------
+# ROUND_<n>=Label|https://url               -> Firefox round
+# ROUND_<n>=Label|terminal:<challenge-name> -> restricted-terminal coding round
+mapfile -t ROUNDS < <(sed -n 's/^[[:space:]]*ROUND_\([0-9]\+\)[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1 \2/p' "$CONF" 2>/dev/null \
+                      | sort -n | cut -d' ' -f2- | grep -E '\|(https://|terminal:)')
+
+ROUND_LABEL="Exam"
+START_URL=$(conf_get START_URL "https://www.kaggle.com/")
+if [ "${#ROUNDS[@]}" -ge 1 ]; then
+    choice="${ROUNDS[0]}"
+    if [ "${#ROUNDS[@]}" -ge 2 ]; then
+        # Invigilator picks the round; on any error fall back to the first one.
+        choice=$("$LIB/round-chooser" "${ROUNDS[@]}") || choice="${ROUNDS[0]}"
+    fi
+    ROUND_LABEL="${choice%%|*}"
+    START_URL="${choice#*|}"
+    # Shown in the exam bar at the top of the browser
+    export KATALYST_EXAM_ROUND="$ROUND_LABEL"
+fi
+
+# ---- Restricted-terminal coding round ---------------------------------------
+case "$START_URL" in
+    terminal:*)
+        log "round '$ROUND_LABEL' is a terminal challenge: ${START_URL#terminal:}"
+        exec "$LIB/terminal-session" "${START_URL#terminal:}"
+        ;;
+esac
+
+# ---- Fresh state for every exam session -------------------------------------
+# Nothing (logins, history, downloads) carries over from the previous student.
+rm -rf "$STATE" "$HOME/.mozilla" "$HOME/.cache/mozilla"
+mkdir -p "$PROFILE" "$STATE/data" "$STATE/config" "$HOME/Downloads"
+find "$HOME/Downloads" -mindepth 1 -delete 2>/dev/null
+cp "$LIB/user.js" "$PROFILE/user.js"
+# Homepage = this session's round (used if all tabs get closed)
+js_url=$(printf '%s' "$START_URL" | sed 's/[\\"]/\\&/g')
+printf 'user_pref("browser.startup.homepage", "%s");\n' "$js_url" >> "$PROFILE/user.js"
+
+# ---- Environment hardening ---------------------------------------------------
+# Only a stripped XDG data dir (icons, themes, mime, schemas — NO .desktop
+# applications): Firefox/GTK cannot find any app to "open" a file or folder
+# with, so download panels / file dialogs can't launch a file manager or terminal.
+export XDG_DATA_DIRS="$LIB/xdg-data"
+export XDG_DATA_HOME="$STATE/data"
+export XDG_CONFIG_HOME="$STATE/config"
+# File dialogs show local files only (no network shares / phones via gvfs).
+export GIO_USE_VFS=local
+# No desktop portals in the exam session; use the plain GTK file chooser.
+export GTK_USE_PORTAL=0
+export MOZ_CRASHREPORTER_DISABLE=1
+# Turns on the single-tab / single-window autoconfig (katalyst-exam.cfg)
+export KATALYST_EXAM_SESSION=1
+[ -n "${WAYLAND_DISPLAY:-}" ] && export MOZ_ENABLE_WAYLAND=1
+
+# Firefox gets no session D-Bus, so it cannot ask other services
+# (file manager, terminal, etc.) to open windows.
+FIREFOX_DBUS="unix:path=/nonexistent/katalyst-exam-no-dbus"
+
+log "session started for $(id -un), round: $ROUND_LABEL, start url: $START_URL"
+
+first=1
+while true; do
+    if [ "$first" = 1 ]; then
+        DBUS_SESSION_BUS_ADDRESS="$FIREFOX_DBUS" \
+            firefox-esr --kiosk --no-remote --profile "$PROFILE" "$START_URL"
+    else
+        # No URL: Firefox restores the previous tabs (session restore).
+        DBUS_SESSION_BUS_ADDRESS="$FIREFOX_DBUS" \
+            firefox-esr --kiosk --no-remote --profile "$PROFILE"
+    fi
+    rc=$?
+    first=0
+    log "browser exited (code $rc), showing exit guard"
+
+    if "$LIB/exit-guard"; then
+        log "exit authorised by invigilator, ending session"
+        exit 0
+    fi
+    log "exit not authorised, relaunching browser"
+done

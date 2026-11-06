@@ -1,0 +1,6 @@
+#!/bin/bash
+# Wayland exam session: cage shows exactly one full-screen app, has no
+# keyboard shortcuts, and blocks VT switching (Ctrl+Alt+Fn) unless -s is given.
+# When exam-session exits (only after the invigilator password), cage exits
+# and GDM returns to the login screen.
+exec cage -d -- /usr/lib/katalyst-exam/exam-session

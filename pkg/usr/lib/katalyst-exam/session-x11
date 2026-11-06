@@ -1,0 +1,13 @@
+#!/bin/bash
+# X11 fallback exam session (machines where GDM has Wayland disabled, e.g. NVIDIA).
+
+# Disable Ctrl+Alt+Fn VT switching and Ctrl+Alt+Backspace server kill.
+setxkbmap -option srvrkeys:none 2>/dev/null || true
+# No screen blanking during the exam.
+xset s off -dpms 2>/dev/null || true
+
+# Minimal window manager: no title bars, no keyboard shortcuts.
+matchbox-window-manager -use_titlebar no -use_desktop_mode plain \
+    -kbdconfig /usr/lib/katalyst-exam/matchbox-kbdconfig &
+
+exec /usr/lib/katalyst-exam/exam-session

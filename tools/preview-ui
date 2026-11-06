@@ -1,0 +1,97 @@
+#!/usr/bin/python3 -I
+"""Preview the exam screens on a normal desktop, in a regular window.
+
+    tools/preview-ui chooser    round picker (rounds read from config/exam.conf)
+    tools/preview-ui guard      exit dialog; test exit password is: test
+
+Nothing is installed or changed on the system. Close the window or click a
+button to end the preview; the result is printed in the terminal.
+"""
+import sys
+sys.dont_write_bytecode = True  # keep pkg/ free of __pycache__
+import importlib.machinery
+import importlib.util
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LIB = os.path.join(ROOT, "pkg/usr/lib/katalyst-exam")
+CONF = os.path.join(ROOT, "config/exam.conf")
+TEST_PASSWORD = "test"
+
+import gi  # noqa: E402
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gtk  # noqa: E402
+
+# Windowed instead of full screen, so the preview can't take over the desktop
+_RealWindow = Gtk.Window
+
+
+class PreviewWindow(_RealWindow):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.set_default_size(1100, 700)
+        # Preview only: the title-bar close button always closes the preview.
+        # (Connected first, so it runs before the screen's own handler.)
+        self.connect("delete-event", lambda *_: (Gtk.main_quit(), True)[1])
+
+    def fullscreen(self):
+        pass
+
+    def set_decorated(self, *_):
+        _RealWindow.set_decorated(self, True)
+
+
+Gtk.Window = PreviewWindow
+
+
+def load(name):
+    path = os.path.join(LIB, name)
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def rounds_from_conf():
+    rounds = []
+    with open(CONF, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"\s*ROUND_(\d+)\s*=\s*(.+?)\s*$", line)
+            if m:
+                rounds.append((int(m.group(1)), m.group(2)))
+    return [r for _, r in sorted(rounds)] or ["Exam|https://www.kaggle.com/"]
+
+
+def main():
+    what = sys.argv[1] if len(sys.argv) > 1 else ""
+    if what == "chooser":
+        rc = load("round-chooser").main(rounds_from_conf())
+        print(f"(round-chooser exit code {rc})")
+    elif what == "guard":
+        guard = load("exit-guard")
+        hashed = subprocess.run([os.path.join(LIB, "hash-password")],
+                                input=TEST_PASSWORD + "\n", capture_output=True,
+                                text=True, check=True).stdout
+        with tempfile.NamedTemporaryFile("w", suffix=".hash", delete=False) as f:
+            f.write(hashed)
+        guard.HASH_FILE = f.name
+        try:
+            print(f"Test exit password: {TEST_PASSWORD}")
+            rc = guard.main()
+        finally:
+            os.unlink(f.name)
+        print("result:", "END SESSION (password accepted)" if rc == 0
+              else "RETURN TO EXAM")
+    else:
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

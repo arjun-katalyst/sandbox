@@ -1,0 +1,11 @@
+Package: katalyst-exam
+Version: @VERSION@
+Architecture: all
+Maintainer: Katalyst.AI <arjuns@klyst.ai>
+Section: misc
+Priority: optional
+Depends: firefox-esr, cage, matchbox-window-manager, x11-xserver-utils, x11-xkb-utils, python3, python3-gi, gir1.2-gtk-3.0, accountsservice, passwd, policykit-1 | polkitd, foot, xterm, nano
+Description: Katalyst.AI locked-down exam browser session
+ Adds an "exam" user whose login session runs Firefox ESR full screen in a
+ single-app compositor (cage), restricted to an allowlist of sites. Closing
+ the browser requires an invigilator password; otherwise it is relaunched.

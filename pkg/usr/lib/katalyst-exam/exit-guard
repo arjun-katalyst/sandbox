@@ -1,0 +1,177 @@
+#!/usr/bin/python3 -I
+"""Full-screen dialog shown whenever the exam round's app exits.
+
+Exit status 0  -> invigilator password correct: end the exam session.
+Exit status !=0 -> return to the exam (browser is relaunched).
+
+Fails closed: any error, a missing hash file, Cancel, or 60 s of inactivity
+returns to the exam.
+"""
+import base64
+import hashlib
+import hmac
+import sys
+import time
+
+HASH_FILE = "/etc/katalyst-exam/exit.hash"
+IDLE_RETURN_SECONDS = 60
+MAXMEM = 64 * 1024 * 1024
+
+
+def verify(password: str) -> bool:
+    try:
+        with open(HASH_FILE, encoding="ascii") as f:
+            scheme, n, r, p, salt, dk = f.read().strip().split("$")
+        if scheme != "scrypt":
+            return False
+        expected = base64.b64decode(dk)
+        got = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt),
+                             n=int(n), r=int(r), p=int(p), maxmem=MAXMEM,
+                             dklen=len(expected))
+        return hmac.compare_digest(got, expected)
+    except Exception:
+        return False
+
+
+def main() -> int:
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk, GLib, Gtk
+
+    result = {"code": 1}
+    state = {"last_activity": time.monotonic(), "failures": 0}
+
+    css = Gtk.CssProvider()
+    css.load_from_data(b"""
+        window { background: #1d2430; }
+        label { color: #e8ecf2; }
+        .brand { font-size: 12pt; font-weight: bold; color: #6f9cff; letter-spacing: 3px; }
+        .title { font-size: 28pt; font-weight: bold; }
+        .sub { font-size: 15pt; color: #b8c2d0; }
+        .small { font-size: 12pt; color: #8f9bad; }
+        .error { font-size: 13pt; color: #ff8a80; }
+        button.action { background-image: none; background-color: #2f6fdb;
+                 border: none; border-radius: 10px; box-shadow: none; }
+        button.action label { color: #ffffff; }
+        button.action:hover { background-color: #3b7cf0; }
+        button.action:active { background-color: #2459b5; }
+        button.action:disabled { background-color: #3a4454; }
+        button.action:disabled label { color: #8f9bad; }
+        button.action.secondary { background-color: #4a5568; }
+        button.action.secondary:hover { background-color: #5a667a; }
+        button.action label { font-size: 16pt; }
+        button.action { padding: 12px 28px; }
+        entry { font-size: 15pt; min-width: 320px; padding: 8px;
+                background-color: #2a3240; color: #e8ecf2;
+                border: 1px solid #4a5568; border-radius: 8px; }
+    """)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    win = Gtk.Window(title="Katalyst Exam")
+    win.set_decorated(False)
+    win.fullscreen()
+
+    def finish(code):
+        result["code"] = code
+        Gtk.main_quit()
+
+    def touch(*_):
+        state["last_activity"] = time.monotonic()
+        return False
+
+    win.connect("delete-event", lambda *_: (finish(1), True)[1])
+    win.connect("key-press-event", touch)
+    win.connect("button-press-event", touch)
+
+    def label(text, cls):
+        lbl = Gtk.Label(label=text)
+        lbl.get_style_context().add_class(cls)
+        lbl.set_line_wrap(True)
+        lbl.set_justify(Gtk.Justification.CENTER)
+        return lbl
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+    box.set_halign(Gtk.Align.CENTER)
+    box.set_valign(Gtk.Align.CENTER)
+
+    brand = Gtk.Label(label="KATALYST.AI  ·  EXAM")
+    brand.get_style_context().add_class("brand")
+    box.pack_start(brand, False, False, 0)
+    box.pack_start(label("The exam round was closed", "title"), False, False, 0)
+    box.pack_start(label("Students: press “Return to exam” to continue.",
+                         "sub"), False, False, 0)
+
+    back = Gtk.Button(label="Return to exam")
+    back.get_style_context().add_class("action")
+    back.connect("clicked", lambda *_: finish(1))
+    box.pack_start(back, False, False, 12)
+
+    box.pack_start(Gtk.Separator(), False, False, 18)
+    box.pack_start(label("Invigilator only — enter the exit password to end the exam session",
+                         "small"), False, False, 0)
+
+    row = Gtk.Box(spacing=12)
+    row.set_halign(Gtk.Align.CENTER)
+    entry = Gtk.Entry()
+    entry.set_visibility(False)
+    entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+    entry.set_placeholder_text("Exit password")
+    exit_btn = Gtk.Button(label="End session")
+    exit_btn.get_style_context().add_class("action")
+    exit_btn.get_style_context().add_class("secondary")
+    row.pack_start(entry, False, False, 0)
+    row.pack_start(exit_btn, False, False, 0)
+    box.pack_start(row, False, False, 0)
+
+    status = label("", "error")
+    box.pack_start(status, False, False, 0)
+
+    def try_exit(*_):
+        touch()
+        if not entry.get_sensitive():
+            return
+        password = entry.get_text()
+        entry.set_text("")
+        if password and verify(password):
+            finish(0)
+            return
+        state["failures"] += 1
+        delay = min(2 * state["failures"], 30)
+        status.set_text(f"Wrong password. Try again in {delay} s.")
+        entry.set_sensitive(False)
+        exit_btn.set_sensitive(False)
+
+        def unlock():
+            entry.set_sensitive(True)
+            exit_btn.set_sensitive(True)
+            status.set_text("")
+            entry.grab_focus()
+            return False
+        GLib.timeout_add_seconds(delay, unlock)
+
+    entry.connect("activate", try_exit)
+    exit_btn.connect("clicked", try_exit)
+
+    def idle_check():
+        if time.monotonic() - state["last_activity"] > IDLE_RETURN_SECONDS:
+            finish(1)
+            return False
+        return True
+    GLib.timeout_add_seconds(1, idle_check)
+
+    win.add(box)
+    win.show_all()
+    back.grab_focus()
+    Gtk.main()
+    return result["code"]
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # fail closed: back to the exam
+        print(f"exit-guard error: {exc}", file=sys.stderr)
+        time.sleep(2)
+        sys.exit(1)

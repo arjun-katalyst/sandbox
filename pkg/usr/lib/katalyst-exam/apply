@@ -1,0 +1,124 @@
+#!/bin/bash
+# Apply /etc/katalyst-exam configuration to this machine. Run as root.
+# Safe to run repeatedly (called by postinst, install.sh and katalyst-exam-admin).
+set -euo pipefail
+
+ETC=/etc/katalyst-exam
+LIB=/usr/lib/katalyst-exam
+DEFAULTS=/usr/share/katalyst-exam/defaults
+STATE=/var/lib/katalyst-exam
+USER_NAME=exam
+AS_FILE=/var/lib/AccountsService/users/$USER_NAME
+PKLA=/etc/polkit-1/localauthority/50-local.d/50-katalyst-exam-no-usb.pkla
+JSRULE=/etc/polkit-1/rules.d/50-katalyst-exam-no-usb.rules
+
+say()  { echo "katalyst-exam: $*"; }
+warn() { echo "katalyst-exam: WARNING: $*" >&2; }
+
+conf_get() {
+    local v
+    v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ETC/exam.conf" 2>/dev/null | tail -n1)
+    v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+    printf '%s' "${v:-$2}"
+}
+
+[ "$(id -u)" = 0 ] || { echo "apply must run as root" >&2; exit 1; }
+
+# ---- Config files ------------------------------------------------------------
+install -d -m 0755 "$ETC" "$STATE"
+for f in exam.conf allowlist.txt; do
+    [ -f "$ETC/$f" ] || install -m 0644 "$DEFAULTS/$f" "$ETC/$f"
+done
+
+# ---- Firefox policies --------------------------------------------------------
+if command -v firefox-esr >/dev/null; then
+    "$LIB/build-policies"
+else
+    warn "firefox-esr is not installed; policies not written"
+fi
+
+# ---- Exam user's session -----------------------------------------------------
+if id "$USER_NAME" >/dev/null 2>&1; then
+    if [ "$(conf_get FORCE_X11 no)" = yes ]; then
+        session=katalyst-exam-x11
+    else
+        # Same id exists in wayland-sessions and xsessions: GDM uses Wayland
+        # (cage) when available and falls back to X11 automatically.
+        session=katalyst-exam
+    fi
+    want=$(printf '[User]\nSession=%s\nXSession=%s\nSystemAccount=false\n' "$session" "$session")
+    if [ ! -f "$AS_FILE" ] || [ "$(cat "$AS_FILE")" != "$want" ]; then
+        install -d -m 0700 "$(dirname "$AS_FILE")"
+        printf '%s\n' "$want" > "$AS_FILE"
+        chmod 0600 "$AS_FILE"
+        systemctl try-restart accounts-daemon.service 2>/dev/null || true
+    fi
+    say "exam user session: $session"
+
+    home=$(getent passwd "$USER_NAME" | cut -d: -f6)
+    if [ -d "$home" ]; then
+        chown "$USER_NAME:$USER_NAME" "$home"
+        chmod 0700 "$home"
+    fi
+
+    # Terminal-round submissions land here (outside $HOME, so the
+    # per-session home wipe never touches them). Exam-owned so
+    # terminal-session can write without needing sudo/polkit.
+    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$STATE/submissions"
+else
+    warn "user '$USER_NAME' does not exist"
+fi
+
+# ---- USB / removable storage -------------------------------------------------
+if [ "$(conf_get ALLOW_USB no)" = yes ]; then
+    rm -f "$PKLA" "$JSRULE"
+    say "USB storage: allowed for exam user"
+else
+    # polkit 0.105 (Ubuntu 22.04) reads .pkla files
+    install -d -m 0755 "$(dirname "$PKLA")"
+    cat > "$PKLA" <<'EOF'
+[Katalyst Exam: no removable storage for the exam user]
+Identity=unix-user:exam
+Action=org.freedesktop.udisks2.*
+ResultAny=no
+ResultInactive=no
+ResultActive=no
+EOF
+    # polkit >= 0.106 (Ubuntu 23.10+/24.04) reads JavaScript rules
+    install -d -m 0755 "$(dirname "$JSRULE")"
+    cat > "$JSRULE" <<'EOF'
+// Katalyst Exam: the exam user may not mount or unlock any storage device.
+polkit.addRule(function (action, subject) {
+    if (subject.user == "exam" &&
+        action.id.indexOf("org.freedesktop.udisks2.") == 0) {
+        return polkit.Result.NO;
+    }
+});
+EOF
+    say "USB storage: blocked for exam user"
+fi
+
+# ---- Other users' home folders must not be readable by the exam user ----------
+# (they would otherwise be browsable from the file-upload dialog)
+touch "$STATE/homes-changed"
+while IFS=: read -r name _ uid _ _ home _; do
+    [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
+    [ "$name" = "$USER_NAME" ] && continue
+    [ -d "$home" ] || continue
+    mode=$(stat -c %a "$home")
+    if [ $(( 0$mode & 07 )) -ne 0 ]; then
+        grep -q "^$home " "$STATE/homes-changed" || echo "$home $mode" >> "$STATE/homes-changed"
+        chmod o-rwx "$home"
+        say "restricted $home (was $mode)"
+    fi
+done < /etc/passwd
+
+# ---- Sanity warnings ---------------------------------------------------------
+if grep -Eqs '^[[:space:]]*AutomaticLoginEnable[[:space:]]*=[[:space:]]*(true|True|1)' /etc/gdm3/custom.conf; then
+    warn "GDM auto-login is enabled; a reboot would skip the exam password. Disable it in /etc/gdm3/custom.conf"
+fi
+if [ ! -s "$ETC/exit.hash" ]; then
+    warn "no invigilator exit password set (sudo katalyst-exam-admin set-exit-password); the session can only be ended by powering off"
+fi
+
+say "applied"

@@ -1,0 +1,93 @@
+#!/bin/bash
+# Runs inside the single-app compositor (cage/X11+matchbox) as the exam
+# user. Launches a restricted terminal for a timed coding challenge.
+# Whenever the terminal exits (Ctrl+D, crash, closed window) the exit
+# guard asks for the invigilator password, same as the browser round.
+# When the time limit is reached, whatever is in answer.txt is snapshotted
+# as the submission and the session can only be ended by the invigilator
+# (no "return to exam" -- time is up).
+#
+# Usage: terminal-session <challenge-name>
+set -u
+
+LIB=/usr/lib/katalyst-exam
+CHALLENGE_NAME="${1:?challenge name required}"
+CHALLENGE_SRC="/usr/share/katalyst-exam/challenge/$CHALLENGE_NAME"
+STATE="$HOME/.katalyst-exam"
+WORKDIR="$HOME/challenge"
+ANSWER_FILE="$WORKDIR/answer.txt"
+SUBMIT_DIR="/var/lib/katalyst-exam/submissions"
+TIME_LIMIT_SECONDS=2700   # 45 minutes
+
+log() { logger -t katalyst-exam -- "$*" 2>/dev/null || true; }
+
+if [ ! -d "$CHALLENGE_SRC" ]; then
+    log "challenge not found: $CHALLENGE_SRC"
+    exit 1
+fi
+
+# ---- Fresh state for every exam session -------------------------------------
+rm -rf "$STATE" "$WORKDIR"
+mkdir -p "$STATE" "$WORKDIR"
+cp -r "$CHALLENGE_SRC"/. "$WORKDIR/"
+cat > "$ANSWER_FILE" <<'EOF'
+vuln_hint:
+secret:
+EOF
+chmod 0600 "$ANSWER_FILE"
+
+# Round start time + limit, read by restricted-shell to show a live
+# countdown in the prompt. Written once so relaunching the terminal
+# (e.g. after an unauthorised exit) doesn't reset the clock.
+printf '%s\n%s\n' "$(date +%s)" "$TIME_LIMIT_SECONDS" > "$STATE/round_meta"
+
+save_submission() {  # save_submission <tag>
+    mkdir -p "$SUBMIT_DIR" 2>/dev/null || true
+    if cp "$ANSWER_FILE" "$SUBMIT_DIR/$(id -un)-$(date +%Y%m%d-%H%M%S)-$1.txt" 2>/dev/null; then
+        log "submission saved ($1)"
+    else
+        log "could not save submission to $SUBMIT_DIR"
+    fi
+}
+
+# ---- 45-minute watchdog --------------------------------------------------------
+(
+    sleep "$TIME_LIMIT_SECONDS"
+    touch "$STATE/time_up"
+    save_submission timeout
+    pkill -TERM -u "$(id -u)" -f "$LIB/restricted-shell" 2>/dev/null
+) &
+WATCHDOG_PID=$!
+trap 'kill "$WATCHDOG_PID" 2>/dev/null' EXIT
+
+log "terminal round '$CHALLENGE_NAME' started for $(id -un), time limit ${TIME_LIMIT_SECONDS}s"
+
+term_cmd() {
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        foot -e "$LIB/restricted-shell"
+    else
+        xterm -fullscreen -e "$LIB/restricted-shell"
+    fi
+}
+
+while true; do
+    term_cmd
+    rc=$?
+    log "terminal exited (code $rc)"
+
+    if [ -f "$STATE/time_up" ]; then
+        log "time limit reached"
+        until "$LIB/time-up"; do
+            log "time-up screen: not authorised, showing it again"
+        done
+        log "exit authorised by invigilator (time up), ending session"
+        exit 0
+    fi
+
+    if "$LIB/exit-guard"; then
+        save_submission final
+        log "exit authorised by invigilator, ending session"
+        exit 0
+    fi
+    log "exit not authorised, relaunching terminal"
+done

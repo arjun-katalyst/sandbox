@@ -1,0 +1,212 @@
+#!/usr/bin/python3 -I
+"""Generate Firefox ESR enterprise policies for the Katalyst Exam.
+
+Reads /etc/katalyst-exam/exam.conf and /etc/katalyst-exam/allowlist.txt and writes
+<firefox-esr install dir>/distribution/policies.json.
+
+The policy goes into Firefox ESR's own install directory, NOT
+/etc/firefox/policies, because Ubuntu's normal (snap) Firefox also reads
+/etc/firefox/policies and would be locked down for everyone.
+
+Usage:  build-policies            write policies.json
+        build-policies --remove   delete it
+        build-policies --print    print the JSON, don't write
+        build-policies --path     print the target path
+"""
+import json
+import os
+import shutil
+import sys
+import tempfile
+
+CONF = "/etc/katalyst-exam/exam.conf"
+ALLOWLIST = "/etc/katalyst-exam/allowlist.txt"
+SYSTEM_POLICY = "/etc/firefox/policies/policies.json"
+CANDIDATE_DIRS = ["/usr/lib/firefox-esr", "/opt/firefox-esr"]
+# Autoconfig (single tab / single window), copied into the Firefox ESR install dir
+AUTOCONFIG_SRC = "/usr/lib/katalyst-exam/firefox"
+AUTOCONFIG_FILES = {  # source name -> path relative to the install dir
+    "autoconfig.js": os.path.join("defaults", "pref", "autoconfig.js"),
+    "katalyst-exam.cfg": "katalyst-exam.cfg",
+}
+
+
+def warn(msg):
+    print(f"build-policies: warning: {msg}", file=sys.stderr)
+
+
+def read_conf(path=CONF):
+    conf = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                conf[key.strip()] = val.strip().strip("'\"")
+    except FileNotFoundError:
+        warn(f"{path} not found, using defaults")
+    return conf
+
+
+def allowlist_patterns(path=ALLOWLIST):
+    patterns = []
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            entry = raw.split("#", 1)[0].strip()
+            if not entry:
+                continue
+            if "://" in entry:
+                patterns.append(entry)
+                continue
+            host, sep, rest = entry.partition("/")
+            host = host.lower().lstrip(".")
+            if host.startswith("*."):
+                host = host[2:]
+            if sep:  # host + path prefix: exact host, https only
+                path_prefix = "/" + rest
+                if not path_prefix.endswith("*"):
+                    path_prefix += "*"
+                patterns.append(f"https://{host}{path_prefix}")
+            else:  # bare domain: domain + all subdomains, https and websockets
+                patterns.append(f"https://*.{host}/*")
+                patterns.append(f"wss://*.{host}/*")
+    # de-duplicate, keep order
+    return list(dict.fromkeys(patterns))
+
+
+def find_install_dir():
+    exe = shutil.which("firefox-esr")
+    dirs = []
+    if exe:
+        dirs.append(os.path.dirname(os.path.realpath(exe)))
+    dirs += CANDIDATE_DIRS
+    for d in dirs:
+        if os.path.isfile(os.path.join(d, "application.ini")) or \
+           os.path.isfile(os.path.join(d, "omni.ja")):
+            return d
+    return None
+
+
+def build(conf, patterns):
+    return {"policies": {
+        # --- Site allowlist -------------------------------------------------
+        "WebsiteFilter": {"Block": ["<all_urls>"], "Exceptions": patterns},
+
+        # --- Start page ------------------------------------------------------
+        # The homepage is the exam round chosen at session start; exam-session
+        # writes it into the session's fresh profile (user.js), so it is not
+        # set here.
+        "OverrideFirstRunPage": "",
+        "OverridePostUpdatePage": "",
+        "NoDefaultBookmarks": True,
+        "DisplayBookmarksToolbar": "never",
+        "DisplayMenuBar": "never",
+
+        # --- Lock down the browser itself -------------------------------------
+        "DisableDeveloperTools": True,
+        "BlockAboutConfig": True,
+        "BlockAboutAddons": True,
+        "BlockAboutProfiles": True,
+        "BlockAboutSupport": True,
+        "DisableSafeMode": True,
+        "DisablePrivateBrowsing": True,
+        "DisableProfileImport": True,
+        "DisableProfileRefresh": True,
+        "DisableSetDesktopBackground": True,
+        "DisableFeedbackCommands": True,
+        "DisableFirefoxAccounts": True,
+        "DisableFirefoxStudies": True,
+        "DisablePocket": True,
+        "DisableTelemetry": True,
+        "DisableAppUpdate": True,
+        "DontCheckDefaultBrowser": True,
+        "PrintingEnabled": False,
+        "ExtensionSettings": {"*": {"installation_mode": "blocked",
+                                    "blocked_install_message":
+                                        "Extensions are disabled in exam mode."}},
+        "UserMessaging": {"ExtensionRecommendations": False,
+                          "FeatureRecommendations": False,
+                          "UrlbarInterventions": False,
+                          "SkipOnboarding": True,
+                          "MoreFromMozilla": False,
+                          "Locked": True},
+
+        # --- Data / privacy on a shared machine ------------------------------
+        "PasswordManagerEnabled": False,
+        "OfferToSaveLogins": False,
+        "DisableFormHistory": True,
+        "DownloadDirectory": "${home}/Downloads",
+        "PromptForDownloadLocation": False,
+        "Permissions": {
+            "Camera": {"BlockNewRequests": True, "Locked": True},
+            "Microphone": {"BlockNewRequests": True, "Locked": True},
+            "Location": {"BlockNewRequests": True, "Locked": True},
+            "Notifications": {"BlockNewRequests": True, "Locked": True},
+            "VirtualReality": {"BlockNewRequests": True, "Locked": True},
+            "ScreenShare": {"BlockNewRequests": True, "Locked": True},
+        },
+    }}
+
+
+def write_atomic(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".policies.")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def main(argv):
+    install_dir = find_install_dir()
+    target = os.path.join(install_dir, "distribution", "policies.json") \
+        if install_dir else None
+
+    if "--path" in argv:
+        print(target or "")
+        return 0 if target else 1
+
+    if "--remove" in argv:
+        paths = [target] if target else []
+        if install_dir:
+            paths += [os.path.join(install_dir, rel) for rel in AUTOCONFIG_FILES.values()]
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"removed {path}")
+        return 0
+
+    policies = build(read_conf(), allowlist_patterns())
+
+    if "--print" in argv:
+        json.dump(policies, sys.stdout, indent=2)
+        print()
+        return 0
+
+    if not target:
+        print("build-policies: error: Firefox ESR install not found "
+              "(is the firefox-esr package installed?)", file=sys.stderr)
+        return 1
+
+    if os.path.exists(SYSTEM_POLICY):
+        warn(f"{SYSTEM_POLICY} exists. Firefox uses that file INSTEAD of "
+             f"{target}, so the exam policies will NOT apply. Remove or merge it.")
+
+    write_atomic(target, policies)
+    n = len(policies["policies"]["WebsiteFilter"]["Exceptions"])
+    print(f"wrote {target} ({n} allowlist patterns)")
+
+    for name, rel in AUTOCONFIG_FILES.items():
+        dest = os.path.join(install_dir, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(os.path.join(AUTOCONFIG_SRC, name), dest)
+        os.chmod(dest, 0o644)
+    print(f"installed single-tab autoconfig in {install_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

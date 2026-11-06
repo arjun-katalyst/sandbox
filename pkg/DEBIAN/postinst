@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    if ! id exam >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/bash --comment "Katalyst Exam" exam
+        # Locked until install.sh / katalyst-exam-admin sets the login password
+        passwd -l exam >/dev/null
+    fi
+    # Name shown on the login screen
+    usermod -c "Katalyst Exam" exam
+    # Never an administrator
+    for g in sudo adm admin wheel lpadmin; do
+        gpasswd -d exam "$g" >/dev/null 2>&1 || true
+    done
+    /usr/lib/katalyst-exam/apply || echo "katalyst-exam: apply failed, run: sudo katalyst-exam-admin apply" >&2
+fi
+exit 0
